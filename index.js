@@ -10,7 +10,7 @@ app.use(cors());
 app.use(express.json());
 
 app.get('/', (req, res) => {
-  res.send('Hello from UIU Loan and Crowdfunding Server!');
+  res.send('Hello from Agri Linker Server!');
 });
 
 app.listen(port, () => {
