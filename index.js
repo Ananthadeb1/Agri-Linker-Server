@@ -1,19 +1,27 @@
 const express = require("express");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
+const path = require("path");
 require("dotenv").config();
 const connectDB = require("./DBconnection.js");
+const upload = require("./upload"); // import upload.js
 
 const app = express();
-const port = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
+
+//serve uploaded images
+app.use("/uploads", express.static("uploads"));
+
+
 
 // Start server only after DB connection
 connectDB().then((client) => {
   // keep the collections here
   const userCollection = client.db("AgriLinker").collection("users");
+  const productCollection = client.db("AgriLinker").collection("products");
 
   //jwt releted work
   app.post("/jwt", async (req, res) => {
@@ -103,6 +111,33 @@ connectDB().then((client) => {
       admin = user?.role === "admin";
     }
     res.send({ admin });
+  });
+
+
+  // Product upload API
+  app.post("/products", verifyToken, upload.single("image"), async (req, res) => {
+    try {
+      const { name, description, price } = req.body;
+      if (!req.file) return res.status(400).send({ message: "No file uploaded" });
+
+      const user = await userCollection.findOne({ email: req.decoded.email });
+      if (!user) return res.status(404).send({ message: "User not found" });
+
+      const newProduct = {
+        name,
+        description,
+        price: parseFloat(price),
+        image: `/uploads/${req.file.filename}`,
+        uid: user.uid,
+        createdAt: new Date(),
+      };
+
+      const result = await productCollection.insertOne(newProduct);
+      res.status(201).send(result);
+    } catch (error) {
+      console.error("Error uploading product:", error);
+      res.status(500).send({ message: "Failed to upload product" });
+    }
   });
 
   //basic route
