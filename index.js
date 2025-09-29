@@ -1,6 +1,8 @@
 const express = require("express");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
+const multer = require("multer");
+const path = require("path");
 require("dotenv").config();
 const connectDB = require("./DBconnection.js");
 
@@ -10,10 +12,38 @@ const port = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
+
+//tanvir
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// Multer configuration for file uploads
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, 'uploads/');
+  },
+  filename: function (req, file, cb) {
+    cb(null, Date.now() + '-' + file.originalname);
+  }
+});
+
+const upload = multer({
+  storage: storage,
+  fileFilter: function (req, file, cb) {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed!'), false);
+    }
+  }
+});
+//ends here
+
+
 // Start server only after DB connection
 connectDB().then((client) => {
   // keep the collections here
   const userCollection = client.db("AgriLinker").collection("users");
+  const productCollection = client.db("AgriLinker").collection("products");
 
   //jwt releted work
   app.post("/jwt", async (req, res) => {
@@ -53,16 +83,6 @@ connectDB().then((client) => {
     }
     next();
   };
-
-  // app.get("/users", verifyToken, async (req, res) => {
-  //   try {
-  //     const users = await userCollection.find().toArray();
-  //     res.json(users);
-  //     console.log("✅ /users route called");
-  //   } catch (error) {
-  //     res.status(500).json({ error: "Failed to fetch users" });
-  //   }
-  // });
 
   //get user by email
   app.get("/users/:email", verifyToken, async (req, res) => {
@@ -105,6 +125,80 @@ connectDB().then((client) => {
     res.send({ admin });
   });
 
+  //tanvir
+
+  // PRODUCT RELATED APIS - NEW ADDITIONS
+
+  // Add new product (only logged in users)
+  app.post("/api/products", verifyToken, upload.single('image'), async (req, res) => {
+    try {
+      const { name, quantityValue, quantityUnit, category, price } = req.body;
+      const farmerEmail = req.decoded.email; // Get email from token
+
+      if (!req.file) {
+        return res.status(400).json({ success: false, message: 'Image file is required' });
+      }
+
+      const product = {
+        name,
+        image: `/uploads/${req.file.filename}`,
+        quantity: {
+          value: parseFloat(quantityValue),
+          unit: quantityUnit
+        },
+        category,
+        farmerEmail,
+        price: parseFloat(price),
+        status: 'available',
+        createdAt: new Date()
+      };
+
+      const result = await productCollection.insertOne(product);
+      res.status(201).json({
+        success: true,
+        message: 'Product added successfully',
+        product: { _id: result.insertedId, ...product }
+      });
+    } catch (error) {
+      res.status(400).json({ success: false, message: error.message });
+    }
+  });
+
+  // Get all products (public access)
+  app.get("/api/products", async (req, res) => {
+    try {
+      const products = await productCollection.find().toArray();
+      res.json(products);
+    } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Get products by logged in farmer
+  app.get("/api/my-products", verifyToken, async (req, res) => {
+    try {
+      const farmerEmail = req.decoded.email;
+      const products = await productCollection.find({ farmerEmail }).toArray();
+      res.json(products);
+    } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Get single product by ID
+  app.get("/api/products/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const product = await productCollection.findOne({ _id: new ObjectId(id) });
+      if (!product) {
+        return res.status(404).json({ message: 'Product not found' });
+      }
+      res.json(product);
+    } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+  //ends here
   //basic route
   app.get("/", (req, res) => {
     res.send("Hello from Agri Linker Server!");
