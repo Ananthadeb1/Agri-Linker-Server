@@ -3,6 +3,7 @@ const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const path = require("path");
+const { ObjectId } = require("mongodb");
 require("dotenv").config();
 const connectDB = require("./DBconnection.js");
 
@@ -12,8 +13,6 @@ const port = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-
-//tanvir
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Multer configuration for file uploads
@@ -36,16 +35,14 @@ const upload = multer({
     }
   }
 });
-//ends here
-
 
 // Start server only after DB connection
 connectDB().then((client) => {
-  // keep the collections here
   const userCollection = client.db("AgriLinker").collection("users");
   const productCollection = client.db("AgriLinker").collection("products");
+  const userPreferenceCollection = client.db("AgriLinker").collection("userpreferences");
 
-  //jwt releted work
+  //jwt related work
   app.post("/jwt", async (req, res) => {
     const user = req.body;
     const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, {
@@ -54,7 +51,7 @@ connectDB().then((client) => {
     res.send({ token });
   });
 
-  //midleware for verify jwt token
+  //middleware for verify jwt token
   const verifyToken = (req, res, next) => {
     console.log("inside verify token", req.headers);
     if (!req.headers.authorization) {
@@ -95,13 +92,11 @@ connectDB().then((client) => {
     res.send(user);
   });
 
-  //user releated apis
-
-  //add user data to db
+  //user related apis
   app.post("/users", async (req, res) => {
     const user = req.body;
     console.log(user);
-    const query = { email: user.email }; //check if user already exists
+    const query = { email: user.email };
     const existingUser = await userCollection.findOne(query);
     if (existingUser) {
       return res.send({ message: "User already exists", insertedId: null });
@@ -125,15 +120,11 @@ connectDB().then((client) => {
     res.send({ admin });
   });
 
-  //tanvir
-
-  // PRODUCT RELATED APIS - NEW ADDITIONS
-
-  // Add new product (only logged in users)
+  // PRODUCT RELATED APIS
   app.post("/api/products", verifyToken, upload.single('image'), async (req, res) => {
     try {
       const { name, quantityValue, quantityUnit, category, price } = req.body;
-      const farmerEmail = req.decoded.email; // Get email from token
+      const farmerEmail = req.decoded.email;
 
       if (!req.file) {
         return res.status(400).json({ success: false, message: 'Image file is required' });
@@ -198,7 +189,147 @@ connectDB().then((client) => {
       res.status(500).json({ message: error.message });
     }
   });
-  //ends here
+
+  // ==================== SEARCH & RECOMMENDATION SYSTEM ====================
+
+  // Search products and track category preference
+  app.post("/api/search-product", verifyToken, async (req, res) => {
+    try {
+      const { searchTerm } = req.body;
+      const userEmail = req.decoded.email;
+
+      if (!searchTerm || !searchTerm.trim()) {
+        return res.status(400).json({ message: 'Search term is required' });
+      }
+
+      // Find products matching the search term (case-insensitive)
+      const products = await productCollection.find({
+        name: { $regex: searchTerm.trim(), $options: 'i' }
+      }).toArray();
+
+      if (products.length === 0) {
+        return res.status(404).json({
+          message: 'No products found',
+          products: []
+        });
+      }
+
+      // Get the category of the first matched product
+      const productCategory = products[0].category;
+
+      // Update user's category preference (increment count by 1)
+      const updateField = `categoryPreferences.${productCategory}`;
+
+      await userPreferenceCollection.updateOne(
+        { userEmail: userEmail },
+        {
+          $inc: { [updateField]: 1 },
+          $setOnInsert: {
+            userEmail: userEmail,
+            createdAt: new Date()
+          }
+        },
+        { upsert: true }
+      );
+
+      res.json({
+        success: true,
+        message: 'Search tracked successfully',
+        products: products,
+        trackedCategory: productCategory
+      });
+
+    } catch (error) {
+      console.error("Search error:", error);
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Get recommended products based on user preferences
+  app.get("/api/products/recommended/:email", verifyToken, async (req, res) => {
+    try {
+      const userEmail = req.params.email;
+
+      // Verify user is requesting their own recommendations
+      if (userEmail !== req.decoded.email) {
+        return res.status(403).send({ message: "unauthorized access" });
+      }
+
+      // Get user's category preferences
+      const userPreference = await userPreferenceCollection.findOne({ userEmail });
+
+      // If no preferences, return all products
+      if (!userPreference) {
+        const allProducts = await productCollection.find().toArray();
+        return res.json(allProducts);
+      }
+
+      // Get all products
+      const allProducts = await productCollection.find().toArray();
+
+      // Sort categories by count (highest first)
+      const categoryPrefs = userPreference.categoryPreferences;
+      const sortedCategories = Object.entries(categoryPrefs)
+        .sort((a, b) => b[1] - a[1])
+        .filter(([category, count]) => count > 0)
+        .map(([category]) => category);
+
+      // Sort products based on category preference
+      const sortedProducts = allProducts.sort((a, b) => {
+        const indexA = sortedCategories.indexOf(a.category);
+        const indexB = sortedCategories.indexOf(b.category);
+
+        // If category not in preferences, put at end
+        const priorityA = indexA === -1 ? 999 : indexA;
+        const priorityB = indexB === -1 ? 999 : indexB;
+
+        return priorityA - priorityB;
+      });
+
+      res.json(sortedProducts);
+
+    } catch (error) {
+      console.error("Recommendation error:", error);
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Get user's category preferences (for debugging/display)
+  app.get("/api/user-preferences/:email", verifyToken, async (req, res) => {
+    try {
+      const userEmail = req.params.email;
+
+      if (userEmail !== req.decoded.email) {
+        return res.status(403).send({ message: "unauthorized access" });
+      }
+
+      const userPreference = await userPreferenceCollection.findOne({ userEmail });
+
+      if (!userPreference) {
+        return res.json({
+          preferences: {},
+          message: 'No search history yet'
+        });
+      }
+
+      // Format preferences for display
+      const preferences = Object.entries(userPreference.categoryPreferences)
+        .filter(([category, count]) => count > 0)
+        .sort((a, b) => b[1] - a[1])
+        .map(([category, count]) => ({ category, count }));
+
+      res.json({
+        preferences,
+        totalSearches: preferences.reduce((sum, p) => sum + p.count, 0)
+      });
+
+    } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // ==================== END OF SEARCH & RECOMMENDATION ====================
+
   //basic route
   app.get("/", (req, res) => {
     res.send("Hello from Agri Linker Server!");
