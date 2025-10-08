@@ -13,34 +13,36 @@ const port = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // Multer configuration for file uploads
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, 'uploads/');
+    cb(null, "uploads/");
   },
   filename: function (req, file, cb) {
-    cb(null, Date.now() + '-' + file.originalname);
-  }
+    cb(null, Date.now() + "-" + file.originalname);
+  },
 });
 
 const upload = multer({
   storage: storage,
   fileFilter: function (req, file, cb) {
-    if (file.mimetype.startsWith('image/')) {
+    if (file.mimetype.startsWith("image/")) {
       cb(null, true);
     } else {
-      cb(new Error('Only image files are allowed!'), false);
+      cb(new Error("Only image files are allowed!"), false);
     }
-  }
+  },
 });
 
 // Start server only after DB connection
 connectDB().then((client) => {
   const userCollection = client.db("AgriLinker").collection("users");
   const productCollection = client.db("AgriLinker").collection("products");
-  const userPreferenceCollection = client.db("AgriLinker").collection("userpreferences");
+  const userPreferenceCollection = client
+    .db("AgriLinker")
+    .collection("userpreferences");
 
   //jwt related work
   app.post("/jwt", async (req, res) => {
@@ -121,39 +123,46 @@ connectDB().then((client) => {
   });
 
   // PRODUCT RELATED APIS
-  app.post("/api/products", verifyToken, upload.single('image'), async (req, res) => {
-    try {
-      const { name, quantityValue, quantityUnit, category, price } = req.body;
-      const farmerEmail = req.decoded.email;
+  app.post(
+    "/api/products",
+    verifyToken,
+    upload.single("image"),
+    async (req, res) => {
+      try {
+        const { name, quantityValue, quantityUnit, category, price } = req.body;
+        const farmerEmail = req.decoded.email;
 
-      if (!req.file) {
-        return res.status(400).json({ success: false, message: 'Image file is required' });
+        if (!req.file) {
+          return res
+            .status(400)
+            .json({ success: false, message: "Image file is required" });
+        }
+
+        const product = {
+          name,
+          image: `/uploads/${req.file.filename}`,
+          quantity: {
+            value: parseFloat(quantityValue),
+            unit: quantityUnit,
+          },
+          category,
+          farmerEmail,
+          price: parseFloat(price),
+          status: "available",
+          createdAt: new Date(),
+        };
+
+        const result = await productCollection.insertOne(product);
+        res.status(201).json({
+          success: true,
+          message: "Product added successfully",
+          product: { _id: result.insertedId, ...product },
+        });
+      } catch (error) {
+        res.status(400).json({ success: false, message: error.message });
       }
-
-      const product = {
-        name,
-        image: `/uploads/${req.file.filename}`,
-        quantity: {
-          value: parseFloat(quantityValue),
-          unit: quantityUnit
-        },
-        category,
-        farmerEmail,
-        price: parseFloat(price),
-        status: 'available',
-        createdAt: new Date()
-      };
-
-      const result = await productCollection.insertOne(product);
-      res.status(201).json({
-        success: true,
-        message: 'Product added successfully',
-        product: { _id: result.insertedId, ...product }
-      });
-    } catch (error) {
-      res.status(400).json({ success: false, message: error.message });
     }
-  });
+  );
 
   // Get all products (public access)
   app.get("/api/products", async (req, res) => {
@@ -180,9 +189,11 @@ connectDB().then((client) => {
   app.get("/api/products/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      const product = await productCollection.findOne({ _id: new ObjectId(id) });
+      const product = await productCollection.findOne({
+        _id: new ObjectId(id),
+      });
       if (!product) {
-        return res.status(404).json({ message: 'Product not found' });
+        return res.status(404).json({ message: "Product not found" });
       }
       res.json(product);
     } catch (error) {
@@ -199,18 +210,20 @@ connectDB().then((client) => {
       const userEmail = req.decoded.email;
 
       if (!searchTerm || !searchTerm.trim()) {
-        return res.status(400).json({ message: 'Search term is required' });
+        return res.status(400).json({ message: "Search term is required" });
       }
 
       // Find products matching the search term (case-insensitive)
-      const products = await productCollection.find({
-        name: { $regex: searchTerm.trim(), $options: 'i' }
-      }).toArray();
+      const products = await productCollection
+        .find({
+          name: { $regex: searchTerm.trim(), $options: "i" },
+        })
+        .toArray();
 
       if (products.length === 0) {
         return res.status(404).json({
-          message: 'No products found',
-          products: []
+          message: "No products found",
+          products: [],
         });
       }
 
@@ -226,19 +239,18 @@ connectDB().then((client) => {
           $inc: { [updateField]: 1 },
           $setOnInsert: {
             userEmail: userEmail,
-            createdAt: new Date()
-          }
+            createdAt: new Date(),
+          },
         },
         { upsert: true }
       );
 
       res.json({
         success: true,
-        message: 'Search tracked successfully',
+        message: "Search tracked successfully",
         products: products,
-        trackedCategory: productCategory
+        trackedCategory: productCategory,
       });
-
     } catch (error) {
       console.error("Search error:", error);
       res.status(500).json({ message: error.message });
@@ -256,7 +268,9 @@ connectDB().then((client) => {
       }
 
       // Get user's category preferences
-      const userPreference = await userPreferenceCollection.findOne({ userEmail });
+      const userPreference = await userPreferenceCollection.findOne({
+        userEmail,
+      });
 
       // If no preferences, return all products
       if (!userPreference) {
@@ -287,7 +301,6 @@ connectDB().then((client) => {
       });
 
       res.json(sortedProducts);
-
     } catch (error) {
       console.error("Recommendation error:", error);
       res.status(500).json({ message: error.message });
@@ -303,12 +316,14 @@ connectDB().then((client) => {
         return res.status(403).send({ message: "unauthorized access" });
       }
 
-      const userPreference = await userPreferenceCollection.findOne({ userEmail });
+      const userPreference = await userPreferenceCollection.findOne({
+        userEmail,
+      });
 
       if (!userPreference) {
         return res.json({
           preferences: {},
-          message: 'No search history yet'
+          message: "No search history yet",
         });
       }
 
@@ -320,15 +335,68 @@ connectDB().then((client) => {
 
       res.json({
         preferences,
-        totalSearches: preferences.reduce((sum, p) => sum + p.count, 0)
+        totalSearches: preferences.reduce((sum, p) => sum + p.count, 0),
       });
-
     } catch (error) {
       res.status(500).json({ message: error.message });
     }
   });
 
   // ==================== END OF SEARCH & RECOMMENDATION ====================
+
+  //make normal user to admin
+  app.patch("/users/admin/:id", async (req, res) => {
+    const id = req.params.id;
+    const filter = { _id: new ObjectId(id) };
+    const updateDoc = {
+      $set: {
+        role: "admin",
+      },
+    };
+    const result = await userCollection.updateOne(filter, updateDoc);
+    res.send(result);
+  });
+
+  //get all users
+  app.get("/users", verifyToken, async (req, res) => {
+    // console.log(req.headers);
+    const result = await userCollection.find().toArray();
+    res.send(result);
+  });
+
+  //make normal user to admin
+  app.patch("/users/admin/:id", async (req, res) => {
+    const id = req.params.id;
+    const filter = { _id: new ObjectId(id) };
+    const updateDoc = {
+      $set: {
+        role: "admin",
+      },
+    };
+    const result = await userCollection.updateOne(filter, updateDoc);
+    res.send(result);
+  });
+
+  app.delete("/users/:id", verifyToken, async (req, res) => {
+    const id = req.params.id;
+    try {
+      const query = { _id: new ObjectId(id) };
+      const user = await userCollection.findOne(query);
+      if (!user) {
+        return res
+          .status(404)
+          .send({ success: false, message: "User not found" });
+      }
+      // Delete from MongoDB
+      const result = await userCollection.deleteOne(query);
+      res.send(result);
+    } catch (error) {
+      console.error("Error deleting user:", error);
+      res
+        .status(500)
+        .send({ success: false, message: "Failed to delete user" });
+    }
+  });
 
   //basic route
   app.get("/", (req, res) => {
