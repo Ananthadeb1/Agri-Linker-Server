@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
+const { ObjectId } = require("mongodb");
 require("dotenv").config();
 const connectDB = require("./DBconnection.js");
 
@@ -103,6 +104,60 @@ connectDB().then((client) => {
       admin = user?.role === "admin";
     }
     res.send({ admin });
+  });
+
+  //make normal user to admin
+  app.patch("/users/admin/:id", async (req, res) => {
+    const id = req.params.id;
+    const filter = { _id: new ObjectId(id) };
+    const updateDoc = {
+      $set: {
+        role: "admin",
+      },
+    };
+    const result = await userCollection.updateOne(filter, updateDoc);
+    res.send(result);
+  });
+
+  //get all users
+  app.get("/users", verifyToken, async (req, res) => {
+    // console.log(req.headers);
+    const result = await userCollection.find().toArray();
+    res.send(result);
+  });
+
+  //make normal user to admin
+  app.patch("/users/admin/:id", async (req, res) => {
+    const id = req.params.id;
+    const filter = { _id: new ObjectId(id) };
+    const updateDoc = {
+      $set: {
+        role: "admin",
+      },
+    };
+    const result = await userCollection.updateOne(filter, updateDoc);
+    res.send(result);
+  });
+
+  app.delete("/users/:id", verifyToken, async (req, res) => {
+    const id = req.params.id;
+    try {
+      const query = { _id: new ObjectId(id) };
+      const user = await userCollection.findOne(query);
+      if (!user) {
+        return res
+          .status(404)
+          .send({ success: false, message: "User not found" });
+      }
+      // Delete from MongoDB
+      const result = await userCollection.deleteOne(query);
+      res.send(result);
+    } catch (error) {
+      console.error("Error deleting user:", error);
+      res
+        .status(500)
+        .send({ success: false, message: "Failed to delete user" });
+    }
   });
 
   //basic route
