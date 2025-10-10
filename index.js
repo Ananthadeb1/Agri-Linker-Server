@@ -44,6 +44,9 @@ connectDB().then((client) => {
     .db("AgriLinker")
     .collection("userpreferences");
 
+  const profileRoutes = require("./routes/userProfile/pofileImage.js")(client);
+  app.use("/profile", profileRoutes);
+
   //jwt related work
   app.post("/jwt", async (req, res) => {
     const user = req.body;
