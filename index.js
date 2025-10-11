@@ -40,6 +40,15 @@ connectDB().then((client) => {
   const productCollection = client.db("AgriLinker").collection("products");
   const userPreferenceCollection = client.db("AgriLinker").collection("userpreferences");
   const cartCollection = client.db("AgriLinker").collection("carts");
+  app.set('cartCollection', cartCollection);
+  const orderCollection = client.db("AgriLinker").collection("ordered_Items");
+
+  app.set('orderCollection', orderCollection);
+
+const ratingReviewCollection = client.db("AgriLinker").collection("rating_review");
+app.set('ratingReviewCollection', ratingReviewCollection);
+app.use('/api/rating-review', require('./routes/ratingReview'));
+
 
 
   // New loan request collection added
@@ -56,6 +65,7 @@ connectDB().then((client) => {
     }
   });
 
+  app.use('/api/orders', require('./routes/orders'));
   // Make cartCollection available to routes
   app.set('cartCollection', cartCollection);
 
