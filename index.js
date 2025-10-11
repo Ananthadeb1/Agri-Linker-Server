@@ -42,9 +42,16 @@ connectDB().then((client) => {
   const userPreferenceCollection = client.db("AgriLinker").collection("userpreferences");
   const cartCollection = client.db("AgriLinker").collection("carts");
   app.set('cartCollection', cartCollection);
-const orderCollection = client.db("AgriLinker").collection("ordered_Items");
-app.set('orderCollection', orderCollection);
-app.use('/api/orders', require('./routes/orders'));
+  const orderCollection = client.db("AgriLinker").collection("ordered_Items");
+
+  app.set('orderCollection', orderCollection);
+
+const ratingReviewCollection = client.db("AgriLinker").collection("rating_review");
+app.set('ratingReviewCollection', ratingReviewCollection);
+app.use('/api/rating-review', require('./routes/ratingReview'));
+
+
+  app.use('/api/orders', require('./routes/orders'));
   // Make cartCollection available to routes
   app.set('cartCollection', cartCollection);
 
