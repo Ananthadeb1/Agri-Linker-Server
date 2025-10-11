@@ -41,7 +41,10 @@ connectDB().then((client) => {
   const productCollection = client.db("AgriLinker").collection("products");
   const userPreferenceCollection = client.db("AgriLinker").collection("userpreferences");
   const cartCollection = client.db("AgriLinker").collection("carts");
-
+  app.set('cartCollection', cartCollection);
+const orderCollection = client.db("AgriLinker").collection("ordered_Items");
+app.set('orderCollection', orderCollection);
+app.use('/api/orders', require('./routes/orders'));
   // Make cartCollection available to routes
   app.set('cartCollection', cartCollection);
 
