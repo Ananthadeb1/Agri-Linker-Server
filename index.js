@@ -12,7 +12,6 @@ const port = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
-
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // Multer configuration for file uploads
@@ -40,9 +39,15 @@ const upload = multer({
 connectDB().then((client) => {
   const userCollection = client.db("AgriLinker").collection("users");
   const productCollection = client.db("AgriLinker").collection("products");
-  const userPreferenceCollection = client
-    .db("AgriLinker")
-    .collection("userpreferences");
+  const userPreferenceCollection = client.db("AgriLinker").collection("userpreferences");
+  const cartCollection = client.db("AgriLinker").collection("carts");
+
+  // Make cartCollection available to routes
+  app.set('cartCollection', cartCollection);
+
+  // Mount cart routes AFTER database connection is established
+  const cartRoutes = require('./routes/cart');
+  app.use('/api/cart', cartRoutes);
 
   //jwt related work
   app.post("/jwt", async (req, res) => {
