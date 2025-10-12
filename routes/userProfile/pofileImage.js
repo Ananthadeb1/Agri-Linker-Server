@@ -23,7 +23,7 @@ module.exports = function (client) {
           message: "Image data is required",
         });
       }
-
+      //A new push
       // Extract base64 data (remove data:image/... prefix)
       const base64Data = imageData.replace(/^data:image\/\w+;base64,/, "");
 
