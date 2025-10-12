@@ -38,25 +38,30 @@ const upload = multer({
 connectDB().then((client) => {
   const userCollection = client.db("AgriLinker").collection("users");
   const productCollection = client.db("AgriLinker").collection("products");
-  const userPreferenceCollection = client.db("AgriLinker").collection("userpreferences");
+  const userPreferenceCollection = client
+    .db("AgriLinker")
+    .collection("userpreferences");
   const cartCollection = client.db("AgriLinker").collection("carts");
-  app.set('cartCollection', cartCollection);
+  app.set("cartCollection", cartCollection);
   const orderCollection = client.db("AgriLinker").collection("ordered_Items");
 
-  app.set('orderCollection', orderCollection);
+  app.set("orderCollection", orderCollection);
 
-const ratingReviewCollection = client.db("AgriLinker").collection("rating_review");
-app.set('ratingReviewCollection', ratingReviewCollection);
-app.use('/api/rating-review', require('./routes/ratingReview'));
-
-
+  const ratingReviewCollection = client
+    .db("AgriLinker")
+    .collection("rating_review");
+  app.set("ratingReviewCollection", ratingReviewCollection);
+  app.use("/api/rating-review", require("./routes/ratingReview"));
 
   // New loan request collection added
-  const loanRequestCollection = client.db("AgriLinker").collection("loanrequests");
+  const loanRequestCollection = client
+    .db("AgriLinker")
+    .collection("loanrequests");
 
   // ...existing routes
 
-  app.get('/api/loans/all', async (req, res) => {  // Add this
+  app.get("/api/loans/all", async (req, res) => {
+    // Add this
     try {
       const loans = await loanRequestCollection.find().toArray();
       res.json(loans);
@@ -65,15 +70,15 @@ app.use('/api/rating-review', require('./routes/ratingReview'));
     }
   });
 
-  app.use('/api/orders', require('./routes/orders'));
+  app.use("/api/orders", require("./routes/orders"));
   // Make cartCollection available to routes
-  app.set('cartCollection', cartCollection);
+  app.set("cartCollection", cartCollection);
 
   // Mount cart routes AFTER database connection is established
-  const cartRoutes = require('./routes/cart');
-  app.use('/api/cart', cartRoutes);
+  const cartRoutes = require("./routes/cart");
+  app.use("/api/cart", cartRoutes);
 
-  const profileRoutes = require("./routes/userProfile/pofileImage.js")(client);
+  const profileRoutes = require("./routes/userProfile/profileImage.js")(client);
   app.use("/profile", profileRoutes);
 
   // JWT token related work
@@ -151,39 +156,46 @@ app.use('/api/rating-review', require('./routes/ratingReview'));
   });
 
   // Product related APIs
-  app.post("/api/products", verifyToken, upload.single("image"), async (req, res) => {
-    try {
-      const { name, quantityValue, quantityUnit, category, price } = req.body;
-      const farmerEmail = req.decoded.email;
+  app.post(
+    "/api/products",
+    verifyToken,
+    upload.single("image"),
+    async (req, res) => {
+      try {
+        const { name, quantityValue, quantityUnit, category, price } = req.body;
+        const farmerEmail = req.decoded.email;
 
-      if (!req.file) {
-        return res.status(400).json({ success: false, message: "Image file is required" });
+        if (!req.file) {
+          return res
+            .status(400)
+            .json({ success: false, message: "Image file is required" });
+        }
+
+        const product = {
+          name,
+          image: `/uploads/${req.file.filename}`,
+          quantity: {
+            value: parseFloat(quantityValue),
+            unit: quantityUnit,
+          },
+          category,
+          farmerEmail,
+          price: parseFloat(price),
+          status: "available",
+          createdAt: new Date(),
+        };
+
+        const result = await productCollection.insertOne(product);
+        res.status(201).json({
+          success: true,
+          message: "Product added successfully",
+          product: { _id: result.insertedId, ...product },
+        });
+      } catch (error) {
+        res.status(400).json({ success: false, message: error.message });
       }
-
-      const product = {
-        name,
-        image: `/uploads/${req.file.filename}`,
-        quantity: {
-          value: parseFloat(quantityValue),
-          unit: quantityUnit,
-        },
-        category,
-        farmerEmail,
-        price: parseFloat(price),
-        status: "available",
-        createdAt: new Date(),
-      };
-
-      const result = await productCollection.insertOne(product);
-      res.status(201).json({
-        success: true,
-        message: "Product added successfully",
-        product: { _id: result.insertedId, ...product },
-      });
-    } catch (error) {
-      res.status(400).json({ success: false, message: error.message });
     }
-  });
+  );
 
   // Get all products (public access)
   app.get("/api/products", async (req, res) => {
@@ -373,12 +385,16 @@ app.use('/api/rating-review', require('./routes/ratingReview'));
       const query = { _id: new ObjectId(id) };
       const user = await userCollection.findOne(query);
       if (!user) {
-        return res.status(404).send({ success: false, message: "User not found" });
+        return res
+          .status(404)
+          .send({ success: false, message: "User not found" });
       }
       const result = await userCollection.deleteOne(query);
       res.send(result);
     } catch (error) {
-      res.status(500).send({ success: false, message: "Failed to delete user" });
+      res
+        .status(500)
+        .send({ success: false, message: "Failed to delete user" });
     }
   });
 
@@ -401,8 +417,16 @@ app.use('/api/rating-review', require('./routes/ratingReview'));
         notes,
       } = req.body;
 
-      if (!farmerId || !amount || !purpose || !repaymentPeriod || !preferredStartDate) {
-        return res.status(400).json({ success: false, message: "Missing required fields" });
+      if (
+        !farmerId ||
+        !amount ||
+        !purpose ||
+        !repaymentPeriod ||
+        !preferredStartDate
+      ) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Missing required fields" });
       }
 
       const newLoanRequest = {
@@ -419,7 +443,11 @@ app.use('/api/rating-review', require('./routes/ratingReview'));
       };
 
       const result = await loanRequestCollection.insertOne(newLoanRequest);
-      res.status(201).json({ success: true, message: "Loan request submitted", loanId: result.insertedId });
+      res.status(201).json({
+        success: true,
+        message: "Loan request submitted",
+        loanId: result.insertedId,
+      });
     } catch (error) {
       res.status(500).json({ success: false, message: error.message });
     }
