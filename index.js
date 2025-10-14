@@ -81,6 +81,10 @@ connectDB().then((client) => {
   const profileRoutes = require("./routes/userProfile/profileImage.js")(client);
   app.use("/profile", profileRoutes);
 
+
+  const cropRecommendationRoutes = require('./routes/cropRecommendation');
+  app.use('/api/crop-recommendation', cropRecommendationRoutes);
+
   // JWT token related work
   app.post("/jwt", async (req, res) => {
     const user = req.body;
