@@ -35,24 +35,57 @@ const upload = multer({
   },
 });
 
-// Start server only after DB connection
 connectDB().then((client) => {
   const userCollection = client.db("AgriLinker").collection("users");
   const productCollection = client.db("AgriLinker").collection("products");
-  const userPreferenceCollection = client.db("AgriLinker").collection("userpreferences");
+  const userPreferenceCollection = client
+    .db("AgriLinker")
+    .collection("userpreferences");
   const cartCollection = client.db("AgriLinker").collection("carts");
+  app.set("cartCollection", cartCollection);
+  const orderCollection = client.db("AgriLinker").collection("ordered_Items");
 
+  app.set("orderCollection", orderCollection);
+
+  const ratingReviewCollection = client
+    .db("AgriLinker")
+    .collection("rating_review");
+  app.set("ratingReviewCollection", ratingReviewCollection);
+  app.use("/api/rating-review", require("./routes/ratingReview"));
+
+  // New loan request collection added
+  const loanRequestCollection = client
+    .db("AgriLinker")
+    .collection("loanrequests");
+
+  // ...existing routes
+
+  app.get("/api/loans/all", async (req, res) => {
+    // Add this
+    try {
+      const loans = await loanRequestCollection.find().toArray();
+      res.json(loans);
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.use("/api/orders", require("./routes/orders"));
   // Make cartCollection available to routes
-  app.set('cartCollection', cartCollection);
+  app.set("cartCollection", cartCollection);
 
   // Mount cart routes AFTER database connection is established
-  const cartRoutes = require('./routes/cart');
-  app.use('/api/cart', cartRoutes);
+  const cartRoutes = require("./routes/cart");
+  app.use("/api/cart", cartRoutes);
 
-  const profileRoutes = require("./routes/userProfile/pofileImage.js")(client);
+  const profileRoutes = require("./routes/userProfile/profileImage.js")(client);
   app.use("/profile", profileRoutes);
 
-  //jwt related work
+
+  const cropRecommendationRoutes = require('./routes/cropRecommendation');
+  app.use('/api/crop-recommendation', cropRecommendationRoutes);
+
+  // JWT token related work
   app.post("/jwt", async (req, res) => {
     const user = req.body;
     const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, {
@@ -61,9 +94,8 @@ connectDB().then((client) => {
     res.send({ token });
   });
 
-  //middleware for verify jwt token
+  // Middleware for verifying JWT token
   const verifyToken = (req, res, next) => {
-    console.log("inside verify token", req.headers);
     if (!req.headers.authorization) {
       return res.status(401).send({ message: "unauthorized access" });
     }
@@ -77,21 +109,19 @@ connectDB().then((client) => {
     });
   };
 
-  // verify admin middleware
+  // Verify admin middleware
   const verifyAdmin = async (req, res, next) => {
     const email = req.decoded.email;
     const query = { email: email };
     const user = await userCollection.findOne(query);
-    console.log("user from db in verifyAdmin", user);
     const isAdmin = user?.role === "admin";
-    console.log("isAdmin in verifyAdmin", isAdmin);
     if (!isAdmin) {
       return res.status(403).send({ message: "forbidden access" });
     }
     next();
   };
 
-  //get user by email
+  // Get user by email
   app.get("/users/:email", verifyToken, async (req, res) => {
     const email = req.params.email;
     if (email !== req.decoded.email) {
@@ -102,10 +132,9 @@ connectDB().then((client) => {
     res.send(user);
   });
 
-  //user related apis
+  // User-related APIs
   app.post("/users", async (req, res) => {
     const user = req.body;
-    console.log(user);
     const query = { email: user.email };
     const existingUser = await userCollection.findOne(query);
     if (existingUser) {
@@ -115,7 +144,7 @@ connectDB().then((client) => {
     res.send(result);
   });
 
-  //check if user is admin or not
+  // Check if user is admin
   app.get("/users/admin/:email", verifyToken, async (req, res) => {
     const email = req.params.email;
     if (email !== req.decoded.email) {
@@ -130,7 +159,7 @@ connectDB().then((client) => {
     res.send({ admin });
   });
 
-  // PRODUCT RELATED APIS
+  // Product related APIs
   app.post(
     "/api/products",
     verifyToken,
@@ -209,9 +238,7 @@ connectDB().then((client) => {
     }
   });
 
-  // ==================== SEARCH & RECOMMENDATION SYSTEM ====================
-
-  // Search products and track category preference
+  // Search & Recommendation system APIs
   app.post("/api/search-product", verifyToken, async (req, res) => {
     try {
       const { searchTerm } = req.body;
@@ -221,7 +248,6 @@ connectDB().then((client) => {
         return res.status(400).json({ message: "Search term is required" });
       }
 
-      // Find products matching the search term (case-insensitive)
       const products = await productCollection
         .find({
           name: { $regex: searchTerm.trim(), $options: "i" },
@@ -235,10 +261,8 @@ connectDB().then((client) => {
         });
       }
 
-      // Get the category of the first matched product
       const productCategory = products[0].category;
 
-      // Update user's category preference (increment count by 1)
       const updateField = `categoryPreferences.${productCategory}`;
 
       await userPreferenceCollection.updateOne(
@@ -265,43 +289,35 @@ connectDB().then((client) => {
     }
   });
 
-  // Get recommended products based on user preferences
   app.get("/api/products/recommended/:email", verifyToken, async (req, res) => {
     try {
       const userEmail = req.params.email;
 
-      // Verify user is requesting their own recommendations
       if (userEmail !== req.decoded.email) {
         return res.status(403).send({ message: "unauthorized access" });
       }
 
-      // Get user's category preferences
       const userPreference = await userPreferenceCollection.findOne({
         userEmail,
       });
 
-      // If no preferences, return all products
       if (!userPreference) {
         const allProducts = await productCollection.find().toArray();
         return res.json(allProducts);
       }
 
-      // Get all products
       const allProducts = await productCollection.find().toArray();
 
-      // Sort categories by count (highest first)
       const categoryPrefs = userPreference.categoryPreferences;
       const sortedCategories = Object.entries(categoryPrefs)
         .sort((a, b) => b[1] - a[1])
         .filter(([category, count]) => count > 0)
         .map(([category]) => category);
 
-      // Sort products based on category preference
       const sortedProducts = allProducts.sort((a, b) => {
         const indexA = sortedCategories.indexOf(a.category);
         const indexB = sortedCategories.indexOf(b.category);
 
-        // If category not in preferences, put at end
         const priorityA = indexA === -1 ? 999 : indexA;
         const priorityB = indexB === -1 ? 999 : indexB;
 
@@ -315,7 +331,6 @@ connectDB().then((client) => {
     }
   });
 
-  // Get user's category preferences (for debugging/display)
   app.get("/api/user-preferences/:email", verifyToken, async (req, res) => {
     try {
       const userEmail = req.params.email;
@@ -335,7 +350,6 @@ connectDB().then((client) => {
         });
       }
 
-      // Format preferences for display
       const preferences = Object.entries(userPreference.categoryPreferences)
         .filter(([category, count]) => count > 0)
         .sort((a, b) => b[1] - a[1])
@@ -350,9 +364,7 @@ connectDB().then((client) => {
     }
   });
 
-  // ==================== END OF SEARCH & RECOMMENDATION ====================
-
-  //make normal user to admin
+  // Make normal user to admin
   app.patch("/users/admin/:id", async (req, res) => {
     const id = req.params.id;
     const filter = { _id: new ObjectId(id) };
@@ -365,23 +377,9 @@ connectDB().then((client) => {
     res.send(result);
   });
 
-  //get all users
+  // Get all users
   app.get("/users", verifyToken, async (req, res) => {
-    // console.log(req.headers);
     const result = await userCollection.find().toArray();
-    res.send(result);
-  });
-
-  //make normal user to admin
-  app.patch("/users/admin/:id", async (req, res) => {
-    const id = req.params.id;
-    const filter = { _id: new ObjectId(id) };
-    const updateDoc = {
-      $set: {
-        role: "admin",
-      },
-    };
-    const result = await userCollection.updateOne(filter, updateDoc);
     res.send(result);
   });
 
@@ -395,20 +393,68 @@ connectDB().then((client) => {
           .status(404)
           .send({ success: false, message: "User not found" });
       }
-      // Delete from MongoDB
       const result = await userCollection.deleteOne(query);
       res.send(result);
     } catch (error) {
-      console.error("Error deleting user:", error);
       res
         .status(500)
         .send({ success: false, message: "Failed to delete user" });
     }
   });
 
-  //basic route
+  // Basic route
   app.get("/", (req, res) => {
     res.send("Hello from Agri Linker Server!");
+  });
+
+  // Loan request POST endpoint
+  app.post("/api/loans", async (req, res) => {
+    try {
+      const {
+        farmerId,
+        amount,
+        purpose,
+        repaymentPeriod,
+        preferredStartDate,
+        previousLoans,
+        collateral,
+        notes,
+      } = req.body;
+
+      if (
+        !farmerId ||
+        !amount ||
+        !purpose ||
+        !repaymentPeriod ||
+        !preferredStartDate
+      ) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Missing required fields" });
+      }
+
+      const newLoanRequest = {
+        farmerId,
+        amount: parseFloat(amount),
+        purpose,
+        repaymentPeriod: parseInt(repaymentPeriod),
+        preferredStartDate,
+        previousLoans,
+        collateral,
+        notes,
+        status: "pending",
+        requestedAt: new Date(),
+      };
+
+      const result = await loanRequestCollection.insertOne(newLoanRequest);
+      res.status(201).json({
+        success: true,
+        message: "Loan request submitted",
+        loanId: result.insertedId,
+      });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
   });
 
   app.listen(port, () => {
