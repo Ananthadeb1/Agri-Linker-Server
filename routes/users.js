@@ -1,39 +1,48 @@
-// routes/users.js (backend)
+// routes/users.js - Alternative version
 router.patch('/update-profile', async (req, res) => {
     try {
-        const { displayName, nidNumber, address } = req.body;
-        const userId = req.user.uid; // Assuming you have authentication middleware
+        const { displayName, nidNumber, address, userId } = req.body;
+        
+        console.log("Updating profile for:", userId); // Debug log
 
-        const updatedUser = await User.findByIdAndUpdate(
-            userId,
+        // Find user by email (userId is actually email from frontend)
+        const updatedUser = await User.findOneAndUpdate(
+            { email: userId }, // Find by email
             {
                 $set: {
-                    displayName,
-                    nidNumber,
-                    address,
+                    displayName: displayName,
+                    nidNumber: nidNumber,
+                    address: address,
                     updatedAt: new Date()
                 }
             },
-            { new: true }
+            { new: true, runValidators: true }
         );
+
+        console.log("Updated user:", updatedUser); // Debug log
 
         if (!updatedUser) {
             return res.status(404).json({
                 success: false,
-                message: 'User not found'
+                message: 'User not found with email: ' + userId
             });
         }
 
         res.json({
             success: true,
             message: 'Profile updated successfully',
-            user: updatedUser
+            user: {
+                displayName: updatedUser.displayName,
+                nidNumber: updatedUser.nidNumber,
+                address: updatedUser.address,
+                email: updatedUser.email
+            }
         });
     } catch (error) {
         console.error('Error updating profile:', error);
         res.status(500).json({
             success: false,
-            message: 'Internal server error'
+            message: 'Internal server error: ' + error.message
         });
     }
 });
