@@ -38,52 +38,34 @@ const upload = multer({
 connectDB().then((client) => {
   const userCollection = client.db("AgriLinker").collection("users");
   const productCollection = client.db("AgriLinker").collection("products");
-  const userPreferenceCollection = client
-    .db("AgriLinker")
-    .collection("userpreferences");
+  const userPreferenceCollection = client.db("AgriLinker").collection("userpreferences");
   const cartCollection = client.db("AgriLinker").collection("carts");
-  app.set("cartCollection", cartCollection);
   const orderCollection = client.db("AgriLinker").collection("ordered_Items");
+  const ratingReviewCollection = client.db("AgriLinker").collection("rating_review");
+  const loanRequestCollection = client.db("AgriLinker").collection("loanrequests");
+  const orderTrackCollection = client.db("AgriLinker").collection("ordertracks");
+  const investmentsCollection = client.db("AgriLinker").collection("investments");
 
-  app.set("orderCollection", orderCollection);
+  // ADD FARMERS COLLECTION FOR VERIFICATION
+  const farmersCollection = client.db("AgriLinker").collection("farmers");
 
-  const ratingReviewCollection = client
-    .db("AgriLinker")
-    .collection("rating_review");
-  app.set("ratingReviewCollection", ratingReviewCollection);
-  app.use("/api/rating-review", require("./routes/ratingReview"));
-
-  // New loan request collection added
-  const loanRequestCollection = client
-    .db("AgriLinker")
-    .collection("loanrequests");
-
-  // ...existing routes
-
-  app.get("/api/loans/all", async (req, res) => {
-    // Add this
-    try {
-      const loans = await loanRequestCollection.find().toArray();
-      res.json(loans);
-    } catch (err) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  app.use("/api/orders", require("./routes/orders"));
-  // Make cartCollection available to routes
+  // Set collections for routes to use
   app.set("cartCollection", cartCollection);
+  app.set("orderCollection", orderCollection);
+  app.set("ratingReviewCollection", ratingReviewCollection);
+  app.set("orderTrackCollection", orderTrackCollection);
+  app.set("productCollection", productCollection);
+  app.set("farmersCollection", farmersCollection);
+  app.set("loanRequestCollection", loanRequestCollection);
+  app.set("investmentsCollection", investmentsCollection);
 
-  // Mount cart routes AFTER database connection is established
-  const cartRoutes = require("./routes/cart");
-  app.use("/api/cart", cartRoutes);
-
-  const profileRoutes = require("./routes/userProfile/profileImage.js")(client);
-  app.use("/profile", profileRoutes);
-
-
-  const cropRecommendationRoutes = require('./routes/cropRecommendation');
-  app.use('/api/crop-recommendation', cropRecommendationRoutes);
+  // Mount all routes AFTER database connection
+  app.use("/api/OrderTrack", require("./routes/OrderTrack.js"));
+  app.use("/api/rating-review", require("./routes/ratingReview"));
+  app.use("/api/orders", require("./routes/orders"));
+  app.use("/api/cart", require("./routes/cart"));
+  app.use("/profile", require("./routes/userProfile/profileImage.js")(client));
+  app.use('/api/crop-recommendation', require('./routes/cropRecommendation'));
 
   // JWT token related work
   app.post("/jwt", async (req, res) => {
@@ -120,6 +102,270 @@ connectDB().then((client) => {
     }
     next();
   };
+
+  // ========== ADMIN ORDERS MANAGEMENT ROUTES ==========
+
+  // Get all orders for admin panel
+  app.get('/api/admin/orders', verifyToken, verifyAdmin, async (req, res) => {
+    try {
+      console.log("📋 Fetching all orders for admin...");
+      const orders = await orderCollection.find({}).sort({ orderedDate: -1 }).toArray();
+      
+      console.log(`✅ Found ${orders.length} orders`);
+      
+      res.json({
+        success: true,
+        orders: orders,
+        total: orders.length,
+        delivered: orders.filter(order => order.delivered).length,
+        pending: orders.filter(order => !order.delivered).length,
+        totalRevenue: orders.reduce((sum, order) => sum + order.totalPrice, 0)
+      });
+    } catch (error) {
+      console.error("❌ Error fetching orders:", error);
+      res.status(500).json({
+        success: false,
+        message: "Failed to fetch orders: " + error.message
+      });
+    }
+  });
+
+  // ✅ FIXED: Update order status and sync between collections
+  app.patch('/api/admin/orders/:id/deliver', verifyToken, verifyAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+      
+      console.log("🔄 Marking order as delivered:", id);
+      
+      // Update in ordered_Items collection
+      const result = await orderCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { 
+          $set: { 
+            delivered: true,
+            deliveredAt: new Date()
+          } 
+        }
+      );
+
+      if (result.modifiedCount === 0) {
+        return res.status(404).json({ 
+          success: false, 
+          message: 'Order not found' 
+        });
+      }
+
+      // ✅ SYNC: Also update in ordertracks collection
+      const order = await orderCollection.findOne({ _id: new ObjectId(id) });
+      if (order && order.orderId) {
+        const trackResult = await orderTrackCollection.updateOne(
+          { orderId: order.orderId },
+          { 
+            $set: { 
+              status: 'Delivered',
+              deliveredAt: new Date()
+            },
+            $push: { 
+              statusHistory: {
+                status: 'Delivered',
+                date: new Date(),
+                note: 'Order delivered to customer'
+              }
+            }
+          }
+        );
+        
+        if (trackResult.modifiedCount > 0) {
+          console.log("✅ Order status synced to ordertracks collection");
+        } else {
+          console.log("⚠️ Order not found in ordertracks collection for orderId:", order.orderId);
+        }
+      } else {
+        console.log("⚠️ No orderId found for order:", id);
+      }
+
+      res.json({ 
+        success: true, 
+        message: 'Order marked as delivered successfully' 
+      });
+    } catch (error) {
+      console.error("❌ Error updating order:", error);
+      res.status(500).json({ 
+        success: false, 
+        message: "Failed to update order: " + error.message 
+      });
+    }
+  });
+
+  // Get order statistics for admin dashboard
+  app.get('/api/admin/orders/stats', verifyToken, verifyAdmin, async (req, res) => {
+    try {
+      const totalOrders = await orderCollection.countDocuments();
+      const deliveredOrders = await orderCollection.countDocuments({ delivered: true });
+      const pendingOrders = await orderCollection.countDocuments({ delivered: false });
+      
+      // Calculate total revenue
+      const revenueResult = await orderCollection.aggregate([
+        {
+          $group: {
+            _id: null,
+            totalRevenue: { $sum: "$totalPrice" }
+          }
+        }
+      ]).toArray();
+      
+      const totalRevenue = revenueResult.length > 0 ? revenueResult[0].totalRevenue : 0;
+
+      res.json({
+        success: true,
+        stats: {
+          totalOrders,
+          delivered: deliveredOrders,
+          pending: pendingOrders,
+          totalRevenue
+        }
+      });
+    } catch (error) {
+      console.error("❌ Error fetching order stats:", error);
+      res.status(500).json({
+        success: false,
+        message: "Failed to fetch order statistics: " + error.message
+      });
+    }
+  });
+
+  // ========== FARMER VERIFICATION ROUTES ==========
+
+  // Get pending farmer verifications
+  app.get('/api/farmers/pending-verification', verifyToken, verifyAdmin, async (req, res) => {
+    try {
+      const farmers = await farmersCollection.find({ status: 'pending' }).toArray();
+      res.json(farmers);
+    } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Approve farmer
+  app.patch('/api/farmers/:id/approve', verifyToken, verifyAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const result = await farmersCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status: 'verified', verifiedAt: new Date() } }
+      );
+
+      if (result.modifiedCount === 0) {
+        return res.status(404).json({ success: false, message: 'Farmer not found' });
+      }
+
+      res.json({ success: true, message: 'Farmer approved successfully' });
+    } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Reject farmer
+  app.patch('/api/farmers/:id/reject', verifyToken, verifyAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { reason } = req.body;
+      const result = await farmersCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status: 'rejected', rejectionReason: reason, rejectedAt: new Date() } }
+      );
+
+      if (result.modifiedCount === 0) {
+        return res.status(404).json({ success: false, message: 'Farmer not found' });
+      }
+
+      res.json({ success: true, message: 'Farmer application rejected' });
+    } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // ========== LOAN MANAGEMENT ROUTES ==========
+
+  // Get all loans
+  app.get('/api/loans/all', verifyToken, verifyAdmin, async (req, res) => {
+    try {
+      const loans = await loanRequestCollection.find().toArray();
+      res.json(loans);
+    } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Approve loan
+  app.patch('/api/loans/:id/approve', verifyToken, verifyAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const result = await loanRequestCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status: 'approved', approvedAt: new Date() } }
+      );
+
+      if (result.modifiedCount === 0) {
+        return res.status(404).json({ success: false, message: 'Loan not found' });
+      }
+
+      res.json({ success: true, message: 'Loan approved successfully' });
+    } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Reject loan
+  app.patch('/api/loans/:id/reject', verifyToken, verifyAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { reason } = req.body;
+      const result = await loanRequestCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status: 'rejected', rejectionReason: reason, rejectedAt: new Date() } }
+      );
+
+      if (result.modifiedCount === 0) {
+        return res.status(404).json({ success: false, message: 'Loan not found' });
+      }
+
+      res.json({ success: true, message: 'Loan application rejected' });
+    } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Disburse loan
+  app.patch('/api/loans/:id/disburse', verifyToken, verifyAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const result = await loanRequestCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status: 'disbursed', disbursedAt: new Date() } }
+      );
+
+      if (result.modifiedCount === 0) {
+        return res.status(404).json({ success: false, message: 'Loan not found' });
+      }
+
+      res.json({ success: true, message: 'Loan funds disbursed successfully' });
+    } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // ========== INVESTMENT MANAGEMENT ROUTES ==========
+
+  // Get all investments
+  app.get('/api/admin/investments', verifyToken, verifyAdmin, async (req, res) => {
+    try {
+      const investments = await investmentsCollection.find().toArray();
+      res.json(investments);
+    } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
+  });
 
   // Get user by email
   app.get("/users/:email", verifyToken, async (req, res) => {
@@ -402,12 +648,7 @@ connectDB().then((client) => {
     }
   });
 
-  // Basic route
-  app.get("/", (req, res) => {
-    res.send("Hello from Agri Linker Server!");
-  });
-
-  // Loan request POST endpoint
+  // Loan request endpoints
   app.post("/api/loans", async (req, res) => {
     try {
       const {
@@ -455,6 +696,42 @@ connectDB().then((client) => {
     } catch (error) {
       res.status(500).json({ success: false, message: error.message });
     }
+  });
+
+  // Create investment
+  app.post('/api/investments', verifyToken, async (req, res) => {
+    try {
+      const { loanId, farmerId, amount, investorId } = req.body;
+
+      const investment = {
+        loanId,
+        farmerId,
+        investorId,
+        amount,
+        status: 'active',
+        investedAt: new Date(),
+        expectedReturn: amount * 1.1 // 10% return example
+      };
+
+      const result = await investmentsCollection.insertOne(investment);
+      res.json({ success: true, investmentId: result.insertedId });
+    } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  app.get("/api/loans/all", async (req, res) => {
+    try {
+      const loans = await loanRequestCollection.find().toArray();
+      res.json(loans);
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Basic route
+  app.get("/", (req, res) => {
+    res.send("Hello from Agri Linker Server!");
   });
 
   app.listen(port, () => {
