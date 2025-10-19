@@ -49,6 +49,10 @@ connectDB().then((client) => {
   // ADD FARMERS COLLECTION FOR VERIFICATION
   const farmersCollection = client.db("AgriLinker").collection("farmers");
 
+  const pendingReviewsCollection = client.db("AgriLinker").collection("pendingreviews");
+
+
+
   // Set collections for routes to use
   app.set("cartCollection", cartCollection);
   app.set("orderCollection", orderCollection);
@@ -58,6 +62,8 @@ connectDB().then((client) => {
   app.set("farmersCollection", farmersCollection);
   app.set("loanRequestCollection", loanRequestCollection);
   app.set("investmentsCollection", investmentsCollection);
+  app.set("pendingReviewsCollection", pendingReviewsCollection);
+  
 
   // Mount all routes AFTER database connection
   app.use("/api/OrderTrack", require("./routes/OrderTrack.js"));
@@ -66,7 +72,8 @@ connectDB().then((client) => {
   app.use("/api/cart", require("./routes/cart"));
   app.use("/profile", require("./routes/userProfile/profileImage.js")(client));
   app.use('/api/crop-recommendation', require('./routes/cropRecommendation'));
-
+  
+  
   // JWT token related work
   app.post("/jwt", async (req, res) => {
     const user = req.body;
