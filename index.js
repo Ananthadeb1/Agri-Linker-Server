@@ -60,7 +60,9 @@ connectDB().then((client) => {
   app.set("farmersCollection", farmersCollection);
   app.set("loanRequestCollection", loanRequestCollection);
   app.set("investmentsCollection", investmentsCollection);
+  app.set("pendingReviewsCollection", pendingReviewsCollection);
 
+  
   // Mount all routes AFTER database connection
   app.use("/api/OrderTrack", require("./routes/OrderTrack.js"));
   app.use("/api/rating-review", require("./routes/ratingReview"));
