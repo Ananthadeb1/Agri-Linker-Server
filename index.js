@@ -49,6 +49,8 @@ connectDB().then((client) => {
   // ADD FARMERS COLLECTION FOR VERIFICATION
   const farmersCollection = client.db("AgriLinker").collection("farmers");
 
+  const pendingReviewsCollection = client.db("AgriLinker").collection("pendingreviews");
+  
   // Set collections for routes to use
   app.set("cartCollection", cartCollection);
   app.set("orderCollection", orderCollection);
