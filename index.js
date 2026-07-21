@@ -3,12 +3,136 @@ const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const path = require("path");
+const fs = require('fs');
 const { ObjectId } = require("mongodb");
+const admin = require("firebase-admin");
 require("dotenv").config();
 const connectDB = require("./DBconnection.js");
 
 const app = express();
 const port = process.env.PORT || 5000;
+
+let firebaseAdminApp = null;
+
+const initializeFirebaseAdmin = () => {
+  if (firebaseAdminApp) {
+    return firebaseAdminApp;
+  }
+
+  // Prefer env var first
+  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON || process.env.FIREBASE_SERVICE_ACCOUNT;
+  const admin = require("firebase-admin");
+require("dotenv").config();
+
+let firebaseAdminApp = null;
+
+const initializeFirebaseAdmin = () => {
+  if (firebaseAdminApp) {
+    return firebaseAdminApp;
+  }
+
+  // .env থেকে ক Credentials রিড করা
+  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON || process.env.FIREBASE_SERVICE_ACCOUNT;
+
+  if (!serviceAccountJson) {
+    console.error('❌ FIREBASE_SERVICE_ACCOUNT_JSON not found in .env');
+    return null;
+  }
+
+  try {
+    const serviceAccount = JSON.parse(serviceAccountJson);
+
+    if (!admin.apps.length) {
+      firebaseAdminApp = admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+      });
+      console.log('✅ Firebase Admin SDK initialized successfully');
+    } else {
+      firebaseAdminApp = admin.app();
+    }
+    return firebaseAdminApp;
+  } catch (error) {
+    console.error('❌ Failed to initialize Firebase Admin:', error.message);
+    return null;
+  }
+};
+  
+  let serviceAccount = null;
+
+  if (serviceAccountJson) {
+    try {
+      serviceAccount = JSON.parse(serviceAccountJson);
+      console.log('✅ Firebase credentials loaded from env var');
+    } catch (err) {
+      console.error('❌ Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON:', err.message);
+      return null;
+    }
+  } else {
+    // Try to load from file - direct absolute path
+    const filePath = 'e:\\Programing\\Software_project\\agri-linker-server\\adminSdk.json';
+    
+    if (fs.existsSync(filePath)) {
+      try {
+        const raw = fs.readFileSync(filePath, 'utf8');
+        serviceAccount = JSON.parse(raw);
+        console.log('✅ Firebase credentials loaded from file:', filePath);
+      } catch (err) {
+        console.error('❌ Failed to read/parse adminSdk.json:', err.message);
+        return null;
+      }
+    } else {
+      console.error('❌ adminSdk.json not found at:', filePath);
+      console.error('   Current working directory:', process.cwd());
+      return null;
+    }
+  }
+
+  try {
+    if (!admin.apps.length) {
+      console.log('🔧 Initializing Firebase Admin SDK...');
+      firebaseAdminApp = admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+      });
+      console.log('✅ Firebase Admin SDK initialized');
+    } else {
+      firebaseAdminApp = admin.app();
+    }
+    return firebaseAdminApp;
+  } catch (error) {
+    console.error('❌ Firebase Admin initialization failed:', error.message);
+    return null;
+  }
+};
+
+const deleteFirebaseUserByEmail = async (email) => {
+  const appInstance = initializeFirebaseAdmin();
+  if (!appInstance) {
+    console.error("❌ Firebase Admin App initialized হতে পারেনি। .env ফাইল চেক করুন।");
+    return { success: false, skipped: true, message: "Firebase Admin is not configured." };
+  }
+
+  try {
+    // Email টি ছোট হাতের অক্ষরের এবং স্পেসমুক্ত রাখা
+    const cleanEmail = email.trim().toLowerCase();
+    
+    // ১. ইমেইল দিয়ে ফায়ারবেস ইউজারকে খোঁজা
+    const userRecord = await appInstance.auth().getUserByEmail(cleanEmail);
+    console.log(`🔍 Firebase User found! UID: ${userRecord.uid}`);
+
+    // ২. UID দিয়ে ইউজার ডিলিট করা
+    await appInstance.auth().deleteUser(userRecord.uid);
+    console.log(`✅ Firebase Auth user (${cleanEmail}) deleted successfully!`);
+    return { success: true };
+
+  } catch (error) {
+    if (error.code === "auth/user-not-found") {
+      console.warn(`⚠️ Firebase-এ '${email}' ইমেইলের কোনো ইউজার পাওয়া যায়নি।`);
+      return { success: true, skipped: true, message: "Firebase user not found." };
+    }
+    console.error("❌ Firebase user deletion error:", error);
+    return { success: false, error: error.message };
+  }
+};
 
 app.use(cors());
 app.use(express.json());
@@ -563,6 +687,50 @@ connectDB().then((client) => {
     }
   });
 
+  // Get farmer sales summary
+  app.get("/api/farmer-sales", verifyToken, async (req, res) => {
+    try {
+      const farmerEmail = req.decoded.email;
+      const products = await productCollection.find({ farmerEmail }).project({ _id: 1, name: 1 }).toArray();
+      const productIds = products.map((product) => product._id?.toString()).filter(Boolean);
+
+      if (productIds.length === 0) {
+        return res.json({
+          success: true,
+          totalQuantity: 0,
+          totalRevenue: 0,
+          productSales: []
+        });
+      }
+
+      const sales = await orderCollection.aggregate([
+        { $unwind: "$items" },
+        { $match: { "items.productId": { $in: productIds } } },
+        {
+          $group: {
+            _id: "$items.productId",
+            totalQuantity: { $sum: "$items.orderedQuantity" },
+            totalRevenue: { $sum: { $multiply: ["$items.orderedQuantity", "$items.price"] } },
+            productName: { $first: "$items.productName" }
+          }
+        }
+      ]).toArray();
+
+      const totalQuantity = sales.reduce((sum, item) => sum + item.totalQuantity, 0);
+      const totalRevenue = sales.reduce((sum, item) => sum + item.totalRevenue, 0);
+
+      res.json({
+        success: true,
+        totalQuantity,
+        totalRevenue,
+        productSales: sales
+      });
+    } catch (error) {
+      console.error('❌ Farmer sales fetch failed:', error);
+      res.status(500).json({ message: error.message });
+    }
+  });
+
   // Get single product by ID
   app.get("/api/products/:id", async (req, res) => {
     try {
@@ -748,28 +916,44 @@ connectDB().then((client) => {
     res.send(result);
   });
 
-  app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
-    const id = req.params.id;
-    try {
-      const targetUser = await userCollection.findOne({ _id: new ObjectId(id) });
-      if (!targetUser) {
-        return res.status(404).send({ success: false, message: "User not found" });
-      }
+app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
+  const id = req.params.id;
 
-      if (targetUser.role === "superadmin") {
-        return res.status(403).send({ success: false, message: "Cannot delete the super admin" });
-      }
+  if (!ObjectId.isValid(id)) {
+    return res.status(400).send({ success: false, message: "Invalid User ID format" });
+  }
 
-      if (req.currentUser.role === "admin" && targetUser.role === "admin") {
-        return res.status(403).send({ success: false, message: "Admin users cannot delete other admins" });
-      }
-
-      const result = await userCollection.deleteOne({ _id: new ObjectId(id) });
-      res.send(result);
-    } catch (error) {
-      res.status(500).send({ success: false, message: "Failed to delete user" });
+  try {
+    const targetUser = await userCollection.findOne({ _id: new ObjectId(id) });
+    if (!targetUser) {
+      return res.status(404).send({ success: false, message: "User not found" });
     }
-  });
+
+    if (targetUser.role === "superadmin") {
+      return res.status(403).send({ success: false, message: "Cannot delete the super admin" });
+    }
+
+    if (req.currentUser.role === "admin" && targetUser.role === "admin") {
+      return res.status(403).send({ success: false, message: "Admin users cannot delete other admins" });
+    }
+
+    //১. আগে Firebase থেকে ডিলিট করার চেষ্টা করা
+    if (targetUser.email) {
+      const fbResult = await deleteFirebaseUserByEmail(targetUser.email);
+      console.log("Firebase Operation Result:", fbResult);
+    } else {
+      console.warn("⚠️ User record-এ কোনো email পাওয়া যায়নি!");
+    }
+
+    // ২. এবার MongoDB থেকে ডিলিট করা
+    const result = await userCollection.deleteOne({ _id: new ObjectId(id) });
+    res.send(result);
+
+  } catch (error) {
+    console.error("❌ User deletion failed:", error);
+    res.status(500).send({ success: false, message: error.message || "Failed to delete user" });
+  }
+});
 
   // Loan request endpoints
   app.post("/api/loans", async (req, res) => {

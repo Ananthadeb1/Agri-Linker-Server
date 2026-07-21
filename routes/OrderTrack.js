@@ -17,7 +17,7 @@ const generateOrderId = () => {
 // Create order from cart - UPDATED TO SYNC WITH BOTH SYSTEMS
 router.post('/create', async (req, res) => {
     try {
-        const { userId } = req.body;
+        const { userId, cartItems: providedCartItems } = req.body;
         const cartCollection = req.app.get("cartCollection");
         const orderTrackCollection = req.app.get("orderTrackCollection");
         const orderCollection = req.app.get("orderCollection"); // For admin panel
@@ -25,9 +25,21 @@ router.post('/create', async (req, res) => {
 
         console.log("🛒 Creating order for user:", userId);
 
-        // 1. Get user's cart items
-        const cartItems = await cartCollection.find({ buyerId: userId }).toArray();
-        
+        // 1. Get cart items from payload if supplied for buy-now, otherwise use the user's cart
+        let cartItems = Array.isArray(providedCartItems) && providedCartItems.length > 0
+            ? providedCartItems
+            : [];
+
+        if (cartItems.length === 0) {
+            if (!cartCollection) {
+                return res.status(500).json({
+                    success: false,
+                    message: 'Cart collection unavailable'
+                });
+            }
+            cartItems = await cartCollection.find({ buyerId: userId }).toArray();
+        }
+
         if (!cartItems || cartItems.length === 0) {
             return res.status(400).json({
                 success: false,
@@ -134,9 +146,11 @@ router.post('/create', async (req, res) => {
             console.error("❌ Stock update error:", stockError);
         }
 
-        // 8. Clear the user's cart after successful order
-        console.log("🗑️ Clearing cart for user:", userId);
-        await cartCollection.deleteMany({ buyerId: userId });
+        // 8. Clear the user's cart after successful order only when order was created from the cart
+        if (!Array.isArray(providedCartItems) || providedCartItems.length === 0) {
+            console.log("🗑️ Clearing cart for user:", userId);
+            await cartCollection.deleteMany({ buyerId: userId });
+        }
 
         // 9. Return success with both IDs
         res.json({
