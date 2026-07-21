@@ -49,6 +49,8 @@ connectDB().then((client) => {
   // ADD FARMERS COLLECTION FOR VERIFICATION
   const farmersCollection = client.db("AgriLinker").collection("farmers");
 
+  const pendingReviewsCollection = client.db("AgriLinker").collection("pendingreviews");
+  
   // Set collections for routes to use
   app.set("cartCollection", cartCollection);
   app.set("orderCollection", orderCollection);
@@ -58,7 +60,9 @@ connectDB().then((client) => {
   app.set("farmersCollection", farmersCollection);
   app.set("loanRequestCollection", loanRequestCollection);
   app.set("investmentsCollection", investmentsCollection);
+  app.set("pendingReviewsCollection", pendingReviewsCollection);
 
+  
   // Mount all routes AFTER database connection
   app.use("/api/OrderTrack", require("./routes/OrderTrack.js"));
   app.use("/api/rating-review", require("./routes/ratingReview"));
