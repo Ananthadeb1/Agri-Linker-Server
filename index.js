@@ -50,7 +50,25 @@ connectDB().then((client) => {
   const farmersCollection = client.db("AgriLinker").collection("farmers");
 
   const pendingReviewsCollection = client.db("AgriLinker").collection("pendingreviews");
-  
+
+  const SUPER_ADMIN_EMAIL = process.env.SUPER_ADMIN_EMAIL || 'ananthadebnath103@gmail.com';
+  userCollection.updateOne(
+    { email: SUPER_ADMIN_EMAIL },
+    {
+      $set: { role: 'superadmin', updatedAt: new Date() },
+      $setOnInsert: {
+        email: SUPER_ADMIN_EMAIL,
+        name: 'Super Admin',
+        createdAt: new Date(),
+      },
+    },
+    { upsert: true }
+  ).then(() => {
+    console.log(`Superadmin seeded for ${SUPER_ADMIN_EMAIL}`);
+  }).catch((error) => {
+    console.error('Failed to seed superadmin:', error);
+  });
+    
   // Set collections for routes to use
   app.set("cartCollection", cartCollection);
   app.set("orderCollection", orderCollection);
@@ -100,10 +118,11 @@ connectDB().then((client) => {
     const email = req.decoded.email;
     const query = { email: email };
     const user = await userCollection.findOne(query);
-    const isAdmin = user?.role === "admin";
+    const isAdmin = user?.role === "admin" || user?.role === "superadmin";
     if (!isAdmin) {
       return res.status(403).send({ message: "forbidden access" });
     }
+    req.currentUser = user;
     next();
   };
 
@@ -291,8 +310,8 @@ connectDB().then((client) => {
 
   // ========== LOAN MANAGEMENT ROUTES ==========
 
-  // Get all loans
-  app.get('/api/loans/all', verifyToken, verifyAdmin, async (req, res) => {
+  // Get all loans for admin dashboard
+  app.get('/api/admin/loans/all', verifyToken, verifyAdmin, async (req, res) => {
     try {
       const loans = await loanRequestCollection.find().toArray();
       res.json(loans);
@@ -371,6 +390,33 @@ connectDB().then((client) => {
     }
   });
 
+  app.patch("/users/update-profile", verifyToken, async (req, res) => {
+    const { displayName, nidNumber, address, userId } = req.body;
+
+    if (userId !== req.decoded.email) {
+      return res.status(403).json({ success: false, message: 'Unauthorized access' });
+    }
+
+    const updateFields = {
+      displayName: displayName?.trim(),
+      name: displayName?.trim(),
+      nidNumber: nidNumber || '',
+      address: address?.trim() || '',
+      updatedAt: new Date(),
+    };
+
+    const result = await userCollection.updateOne(
+      { email: userId },
+      { $set: updateFields }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    res.json({ success: true, message: 'Profile updated successfully', modifiedCount: result.modifiedCount });
+  });
+
   // Get user by email
   app.get("/users/:email", verifyToken, async (req, res) => {
     const email = req.params.email;
@@ -382,15 +428,60 @@ connectDB().then((client) => {
     res.send(user);
   });
 
+  app.patch("/users/:email", verifyToken, async (req, res) => {
+    const email = req.params.email;
+    if (email !== req.decoded.email) {
+      return res.status(403).send({ message: "unauthorized access" });
+    }
+
+    const updateData = req.body;
+    delete updateData._id;
+
+    const existingUser = await userCollection.findOne({ email });
+    if (!existingUser) {
+      return res.status(404).send({ success: false, message: 'User not found' });
+    }
+
+    if (updateData.role) {
+      if (updateData.role !== 'farmer') {
+        return res.status(400).send({ success: false, message: 'Role can only be changed to farmer via profile settings.' });
+      }
+      if (existingUser.role === 'farmer' || existingUser.role === 'admin') {
+        return res.status(400).send({ success: false, message: 'Your account already has farmer access.' });
+      }
+    }
+
+    const result = await userCollection.updateOne(
+      { email },
+      { $set: updateData }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).send({ success: false, message: 'User not found' });
+    }
+
+    res.send({ success: true, modifiedCount: result.modifiedCount });
+  });
+
   // User-related APIs
   app.post("/users", async (req, res) => {
     const user = req.body;
     const query = { email: user.email };
     const existingUser = await userCollection.findOne(query);
     if (existingUser) {
+      if (!existingUser.role) {
+        await userCollection.updateOne(query, { $set: { role: 'buyer' } });
+      }
       return res.send({ message: "User already exists", insertedId: null });
     }
-    const result = await userCollection.insertOne(user);
+
+    const createUser = {
+      ...user,
+      role: user.role || 'buyer',
+      createdAt: user.createdAt || new Date(),
+    };
+
+    const result = await userCollection.insertOne(createUser);
     res.send(result);
   });
 
@@ -404,7 +495,7 @@ connectDB().then((client) => {
     const user = await userCollection.findOne(query);
     let admin = false;
     if (user) {
-      admin = user?.role === "admin";
+      admin = user?.role === "admin" || user?.role === "superadmin";
     }
     res.send({ admin });
   });
@@ -615,40 +706,68 @@ connectDB().then((client) => {
   });
 
   // Make normal user to admin
-  app.patch("/users/admin/:id", async (req, res) => {
+  app.patch("/users/admin/:id", verifyToken, verifyAdmin, async (req, res) => {
     const id = req.params.id;
-    const filter = { _id: new ObjectId(id) };
-    const updateDoc = {
-      $set: {
-        role: "admin",
-      },
-    };
-    const result = await userCollection.updateOne(filter, updateDoc);
+    const { role } = req.body;
+    const allowedRoles = ["buyer", "farmer", "admin"];
+
+    const targetUser = await userCollection.findOne({ _id: new ObjectId(id) });
+    if (!targetUser) {
+      return res.status(404).send({ success: false, message: "User not found" });
+    }
+
+    if (targetUser.role === "superadmin") {
+      return res.status(403).send({ success: false, message: "Cannot modify the super admin" });
+    }
+
+    if (req.currentUser.role === "admin") {
+      if (targetUser.role === "admin") {
+        return res.status(403).send({ success: false, message: "Admin users cannot modify other admins" });
+      }
+      if (role === "superadmin") {
+        return res.status(403).send({ success: false, message: "Only the super admin can assign super admin privileges" });
+      }
+    }
+
+    const requestedRole = role || "admin";
+    if (!allowedRoles.includes(requestedRole)) {
+      return res.status(400).send({ success: false, message: "Invalid role selected" });
+    }
+
+    const result = await userCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { role: requestedRole } }
+    );
+
     res.send(result);
   });
 
   // Get all users
-  app.get("/users", verifyToken, async (req, res) => {
+  app.get("/users", verifyToken, verifyAdmin, async (req, res) => {
     const result = await userCollection.find().toArray();
     res.send(result);
   });
 
-  app.delete("/users/:id", verifyToken, async (req, res) => {
+  app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
     const id = req.params.id;
     try {
-      const query = { _id: new ObjectId(id) };
-      const user = await userCollection.findOne(query);
-      if (!user) {
-        return res
-          .status(404)
-          .send({ success: false, message: "User not found" });
+      const targetUser = await userCollection.findOne({ _id: new ObjectId(id) });
+      if (!targetUser) {
+        return res.status(404).send({ success: false, message: "User not found" });
       }
-      const result = await userCollection.deleteOne(query);
+
+      if (targetUser.role === "superadmin") {
+        return res.status(403).send({ success: false, message: "Cannot delete the super admin" });
+      }
+
+      if (req.currentUser.role === "admin" && targetUser.role === "admin") {
+        return res.status(403).send({ success: false, message: "Admin users cannot delete other admins" });
+      }
+
+      const result = await userCollection.deleteOne({ _id: new ObjectId(id) });
       res.send(result);
     } catch (error) {
-      res
-        .status(500)
-        .send({ success: false, message: "Failed to delete user" });
+      res.status(500).send({ success: false, message: "Failed to delete user" });
     }
   });
 
@@ -724,7 +843,7 @@ connectDB().then((client) => {
     }
   });
 
-  app.get("/api/loans/all", async (req, res) => {
+  app.get("/api/loans/all", verifyToken, async (req, res) => {
     try {
       const loans = await loanRequestCollection.find().toArray();
       res.json(loans);
