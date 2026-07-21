@@ -115,19 +115,23 @@ router.patch('/submit/:reviewId', async (req, res) => {
         // If user is submitting a rating (not skipping), save to main collection
         if (status === 'complete' && rating) {
             console.log("⭐ Saving to main rating collection");
-            
+                
             const finalReview = {
                 userId: pendingReview.userId,
                 productId: pendingReview.productId,
+                productName: pendingReview.productName || "",
+                orderId: pendingReview.orderId || "",
+                image: pendingReview.image || "",
+                category: pendingReview.category || "",
                 rating: parseInt(rating),
                 review: review || "",
-                createdAt: new Date()
+                createdAt: new Date(),
+                updatedAt: new Date()
             };
 
             await ratingReviewCollection.insertOne(finalReview);
             console.log("✅ Final review saved to main collection");
         }
-
         // Update the pending review status
         const updateData = {
             status: status,
@@ -258,7 +262,8 @@ router.post('/submit', async (req, res) => {
             productId,
             rating: parseInt(rating),
             review: review || "",
-            createdAt: new Date()
+            createdAt: new Date(),
+            updatedAt: new Date()
         };
 
         const result = await ratingReviewCollection.insertOne(reviewDoc);
@@ -276,6 +281,58 @@ router.post('/submit', async (req, res) => {
         res.status(500).json({
             success: false,
             message: "Failed to submit review"
+        });
+    }
+});
+
+// ✅ Update existing completed review
+router.patch('/update/:reviewId', async (req, res) => {
+    try {
+        const ratingReviewCollection = req.app.get('ratingReviewCollection');
+        const { reviewId } = req.params;
+        const { rating, review } = req.body;
+
+        console.log("🔄 Updating completed review:", { reviewId, rating });
+
+        if (!reviewId) {
+            return res.status(400).json({
+                success: false,
+                message: "Review ID is required"
+            });
+        }
+
+        const updateFields = {
+            updatedAt: new Date()
+        };
+
+        if (rating !== undefined) {
+            updateFields.rating = parseInt(rating);
+        }
+        if (review !== undefined) {
+            updateFields.review = review;
+        }
+
+        const result = await ratingReviewCollection.updateOne(
+            { _id: new ObjectId(reviewId) },
+            { $set: updateFields }
+        );
+
+        if (result.matchedCount === 0) {
+            return res.status(404).json({
+                success: false,
+                message: "Review not found"
+            });
+        }
+
+        res.json({
+            success: true,
+            message: "Review updated successfully"
+        });
+    } catch (error) {
+        console.error("❌ Update review error:", error);
+        res.status(500).json({
+            success: false,
+            message: "Failed to update review: " + error.message
         });
     }
 });
