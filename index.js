@@ -5,7 +5,8 @@ const multer = require("multer");
 const path = require("path");
 const fs = require('fs');
 const { ObjectId } = require("mongodb");
-const admin = require("firebase-admin");
+const { initializeApp: initFbApp, cert, getApps } = require("firebase-admin/app");
+const { getAuth } = require("firebase-admin/auth");
 require("dotenv").config();
 const connectDB = require("./DBconnection.js");
 
@@ -19,83 +20,49 @@ const initializeFirebaseAdmin = () => {
     return firebaseAdminApp;
   }
 
-  // Prefer env var first
-  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON || process.env.FIREBASE_SERVICE_ACCOUNT;
-  const admin = require("firebase-admin");
-require("dotenv").config();
-
-let firebaseAdminApp = null;
-
-const initializeFirebaseAdmin = () => {
-  if (firebaseAdminApp) {
-    return firebaseAdminApp;
-  }
-
-  // .env থেকে ক Credentials রিড করা
-  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON || process.env.FIREBASE_SERVICE_ACCOUNT;
-
-  if (!serviceAccountJson) {
-    console.error('❌ FIREBASE_SERVICE_ACCOUNT_JSON not found in .env');
-    return null;
-  }
-
-  try {
-    const serviceAccount = JSON.parse(serviceAccountJson);
-
-    if (!admin.apps.length) {
-      firebaseAdminApp = admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
-      });
-      console.log('✅ Firebase Admin SDK initialized successfully');
-    } else {
-      firebaseAdminApp = admin.app();
-    }
-    return firebaseAdminApp;
-  } catch (error) {
-    console.error('❌ Failed to initialize Firebase Admin:', error.message);
-    return null;
-  }
-};
-  
   let serviceAccount = null;
+  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON || process.env.FIREBASE_SERVICE_ACCOUNT;
 
   if (serviceAccountJson) {
     try {
-      serviceAccount = JSON.parse(serviceAccountJson);
+      serviceAccount = typeof serviceAccountJson === "string" ? JSON.parse(serviceAccountJson) : serviceAccountJson;
       console.log('✅ Firebase credentials loaded from env var');
     } catch (err) {
-      console.error('❌ Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON:', err.message);
-      return null;
+      console.warn('⚠️ Could not parse FIREBASE_SERVICE_ACCOUNT_JSON from env:', err.message);
     }
-  } else {
-    // Try to load from file - direct absolute path
-    const filePath = 'e:\\Programing\\Software_project\\agri-linker-server\\adminSdk.json';
-    
+  }
+
+  if (!serviceAccount) {
+    const filePath = path.join(__dirname, 'adminSdk.json');
     if (fs.existsSync(filePath)) {
       try {
         const raw = fs.readFileSync(filePath, 'utf8');
         serviceAccount = JSON.parse(raw);
-        console.log('✅ Firebase credentials loaded from file:', filePath);
+        console.log('✅ Firebase credentials loaded from adminSdk.json');
       } catch (err) {
         console.error('❌ Failed to read/parse adminSdk.json:', err.message);
-        return null;
       }
-    } else {
-      console.error('❌ adminSdk.json not found at:', filePath);
-      console.error('   Current working directory:', process.cwd());
-      return null;
     }
   }
 
+  if (!serviceAccount) {
+    console.error('❌ Firebase service account credentials not found in env or adminSdk.json');
+    return null;
+  }
+
+  if (serviceAccount && typeof serviceAccount.private_key === 'string') {
+    serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+  }
+
   try {
-    if (!admin.apps.length) {
-      console.log('🔧 Initializing Firebase Admin SDK...');
-      firebaseAdminApp = admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
+    const existingApps = getApps();
+    if (!existingApps.length) {
+      firebaseAdminApp = initFbApp({
+        credential: cert(serviceAccount),
       });
-      console.log('✅ Firebase Admin SDK initialized');
+      console.log('✅ Firebase Admin SDK initialized successfully');
     } else {
-      firebaseAdminApp = admin.app();
+      firebaseAdminApp = existingApps[0];
     }
     return firebaseAdminApp;
   } catch (error) {
@@ -104,34 +71,54 @@ const initializeFirebaseAdmin = () => {
   }
 };
 
-const deleteFirebaseUserByEmail = async (email) => {
+const deleteFirebaseUser = async (email, uid) => {
   const appInstance = initializeFirebaseAdmin();
   if (!appInstance) {
-    console.error("❌ Firebase Admin App initialized হতে পারেনি। .env ফাইল চেক করুন।");
+    console.error("❌ Firebase Admin App is not initialized.");
     return { success: false, skipped: true, message: "Firebase Admin is not configured." };
   }
 
-  try {
-    // Email টি ছোট হাতের অক্ষরের এবং স্পেসমুক্ত রাখা
-    const cleanEmail = email.trim().toLowerCase();
-    
-    // ১. ইমেইল দিয়ে ফায়ারবেস ইউজারকে খোঁজা
-    const userRecord = await appInstance.auth().getUserByEmail(cleanEmail);
-    console.log(`🔍 Firebase User found! UID: ${userRecord.uid}`);
+  const auth = getAuth(appInstance);
+  let deleted = false;
 
-    // ২. UID দিয়ে ইউজার ডিলিট করা
-    await appInstance.auth().deleteUser(userRecord.uid);
-    console.log(`✅ Firebase Auth user (${cleanEmail}) deleted successfully!`);
-    return { success: true };
-
-  } catch (error) {
-    if (error.code === "auth/user-not-found") {
-      console.warn(`⚠️ Firebase-এ '${email}' ইমেইলের কোনো ইউজার পাওয়া যায়নি।`);
-      return { success: true, skipped: true, message: "Firebase user not found." };
+  // 1. Try deleting by UID first if available
+  if (uid) {
+    try {
+      await auth.deleteUser(uid);
+      console.log(`✅ Firebase Auth user deleted by UID: ${uid}`);
+      deleted = true;
+    } catch (error) {
+      if (error.code === "auth/user-not-found") {
+        console.warn(`⚠️ Firebase user with UID '${uid}' not found.`);
+      } else {
+        console.error("❌ Firebase deletion by UID error:", error.message);
+      }
     }
-    console.error("❌ Firebase user deletion error:", error);
-    return { success: false, error: error.message };
   }
+
+  // 2. Fallback to deleting by email if not deleted yet
+  if (!deleted && email) {
+    try {
+      const cleanEmail = email.trim().toLowerCase();
+      const userRecord = await auth.getUserByEmail(cleanEmail);
+      await auth.deleteUser(userRecord.uid);
+      console.log(`✅ Firebase Auth user (${cleanEmail}) deleted by email successfully!`);
+      deleted = true;
+    } catch (error) {
+      if (error.code === "auth/user-not-found") {
+        console.warn(`⚠️ Firebase user with email '${email}' not found.`);
+        return { success: true, skipped: true, message: "Firebase user not found." };
+      }
+      console.error("❌ Firebase deletion by email error:", error.message);
+      return { success: false, error: error.message };
+    }
+  }
+
+  if (deleted) {
+    return { success: true };
+  }
+
+  return { success: false, message: "Neither email nor UID was provided or deletion failed." };
 };
 
 app.use(cors());
@@ -929,25 +916,28 @@ app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
       return res.status(404).send({ success: false, message: "User not found" });
     }
 
-    if (targetUser.role === "superadmin") {
-      return res.status(403).send({ success: false, message: "Cannot delete the super admin" });
+    const SUPER_ADMIN_EMAIL = process.env.SUPER_ADMIN_EMAIL || 'ananthadebnath103@gmail.com';
+    const isTargetSuperAdmin = targetUser.role === "superadmin" || targetUser.email === SUPER_ADMIN_EMAIL;
+
+    // Rule: No one can delete super admin
+    if (isTargetSuperAdmin) {
+      return res.status(403).send({ success: false, message: "No one can delete the super admin" });
     }
 
-    if (req.currentUser.role === "admin" && targetUser.role === "admin") {
+    const isCurrentSuperAdmin = req.currentUser.role === "superadmin" || req.currentUser.email === SUPER_ADMIN_EMAIL;
+
+    // Rule: Super admin can delete any user. Normal admin cannot delete another admin.
+    if (!isCurrentSuperAdmin && targetUser.role === "admin") {
       return res.status(403).send({ success: false, message: "Admin users cannot delete other admins" });
     }
 
-    //১. আগে Firebase থেকে ডিলিট করার চেষ্টা করা
-    if (targetUser.email) {
-      const fbResult = await deleteFirebaseUserByEmail(targetUser.email);
-      console.log("Firebase Operation Result:", fbResult);
-    } else {
-      console.warn("⚠️ User record-এ কোনো email পাওয়া যায়নি!");
-    }
+    // 1. Delete from Firebase Auth
+    const fbResult = await deleteFirebaseUser(targetUser.email, targetUser.uid);
+    console.log("Firebase Deletion Result:", fbResult);
 
-    // ২. এবার MongoDB থেকে ডিলিট করা
+    // 2. Delete from MongoDB database
     const result = await userCollection.deleteOne({ _id: new ObjectId(id) });
-    res.send(result);
+    res.send({ success: true, deletedCount: result.deletedCount, ...result });
 
   } catch (error) {
     console.error("❌ User deletion failed:", error);
