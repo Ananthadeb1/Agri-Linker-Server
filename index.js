@@ -4,6 +4,8 @@ const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const path = require("path");
 const fs = require('fs');
+const FormData = require("form-data");
+const fetch = require("node-fetch");
 const { ObjectId } = require("mongodb");
 const { initializeApp: initFbApp, cert, getApps } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
@@ -12,6 +14,34 @@ const connectDB = require("./DBconnection.js");
 
 const app = express();
 const port = process.env.PORT || 5000;
+
+// Helper function to upload image buffer to ImgBB cloud or fallback to Database Data URI
+const uploadToImgBBOrDatabase = async (file) => {
+  if (!file) return null;
+  const base64Data = file.buffer.toString("base64");
+
+  const apiKey = process.env.IMGBB_API_KEY;
+  if (apiKey) {
+    try {
+      const formData = new FormData();
+      formData.append("image", base64Data);
+
+      const response = await fetch(`https://api.imgbb.com/1/upload?key=${apiKey}`, {
+        method: "POST",
+        body: formData,
+      });
+      const data = await response.json();
+      if (data.success && data.data?.url) {
+        console.log("✅ Image successfully uploaded to ImgBB cloud CDN:", data.data.url);
+        return data.data.url;
+      }
+    } catch (err) {
+      console.warn("⚠️ ImgBB upload failed, storing Base64 Data URI in database:", err.message);
+    }
+  }
+
+  return `data:${file.mimetype};base64,${base64Data}`;
+};
 
 let firebaseAdminApp = null;
 
@@ -123,20 +153,11 @@ const deleteFirebaseUser = async (email, uid) => {
 
 app.use(cors());
 app.use(express.json());
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-// Multer configuration for file uploads
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, "uploads/");
-  },
-  filename: function (req, file, cb) {
-    cb(null, Date.now() + "-" + file.originalname);
-  },
-});
-
+// Multer configuration: in-memory storage (no files saved to local disk)
 const upload = multer({
-  storage: storage,
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB file limit
   fileFilter: function (req, file, cb) {
     if (file.mimetype.startsWith("image/")) {
       cb(null, true);
@@ -618,18 +639,23 @@ connectDB().then((client) => {
     upload.single("image"),
     async (req, res) => {
       try {
-        const { name, quantityValue, quantityUnit, category, price } = req.body;
+        const { name, quantityValue, quantityUnit, category, price, image: bodyImage } = req.body;
         const farmerEmail = req.decoded.email;
 
-        if (!req.file) {
+        let imageUrl = bodyImage;
+        if (req.file) {
+          imageUrl = await uploadToImgBBOrDatabase(req.file);
+        }
+
+        if (!imageUrl) {
           return res
             .status(400)
-            .json({ success: false, message: "Image file is required" });
+            .json({ success: false, message: "Image file or URL is required" });
         }
 
         const product = {
           name,
-          image: `/uploads/${req.file.filename}`,
+          image: imageUrl,
           quantity: {
             value: parseFloat(quantityValue),
             unit: quantityUnit,
@@ -1035,3 +1061,5 @@ app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
     console.log(`🚀 Server is running on port: ${port}`);
   });
 });
+
+module.exports = app;
